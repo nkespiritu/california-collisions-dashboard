@@ -10,13 +10,90 @@ from pathlib import Path
 
 dbPath = '../../../iCloud/Employment/Plentina/switrs.sqlite'
 
+countyCodes = {
+    '01': 'Alameda',
+    '02': 'Alpine',
+    '03': 'Amador',
+    '04': 'Butte',
+    '05': 'Calaveras',
+    '06': 'Colusa',
+    '07': 'Contra Costa',
+    '08': 'Del Norte',
+    '09': 'El Dorado',
+    '10': 'Fresno',
+    '11': 'Glenn',
+    '12': 'Humboldt',
+    '13': 'Imperial',
+    '14': 'Inyo',
+    '15': 'Kern',
+    '16': 'Kings',
+    '17': 'Lake',
+    '18': 'Lassen',
+    '19': 'Los Angeles',
+    '20': 'Madera',
+    '21': 'Marin',
+    '22': 'Mariposa',
+    '23': 'Mendocino',
+    '24': 'Merced',
+    '25': 'Modoc',
+    '26': 'Mono',
+    '27': 'Monterey',
+    '28': 'Napa',
+    '29': 'Nevada',
+    '30': 'Orange',
+    '31': 'Placer',
+    '32': 'Plumas',
+    '33': 'Riverside',
+    '34': 'Sacramento',
+    '35': 'San Benito',
+    '36': 'San Bernardino',
+    '37': 'San Diego',
+    '38': 'San Francisco',
+    '39': 'San Joaquin',
+    '40': 'San Luis Obispo',
+    '41': 'San Mateo',
+    '42': 'Santa Barbara',
+    '43': 'Santa Clara',
+    '44': 'Santa Cruz',
+    '45': 'Shasta',
+    '46': 'Sierra',
+    '47': 'Siskiyou',
+    '48': 'Solano',
+    '49': 'Sonoma',
+    '50': 'Stanislaus',
+    '51': 'Sutter',
+    '52': 'Tehama',
+    '53': 'Trinity',
+    '54': 'Tulare',
+    '55': 'Tuolumne',
+    '56': 'Ventura',
+    '57': 'Yolo',
+    '58': 'Yuba'
+}
+
 def main():
     st.title("California Collisions Monitor")
     conn = get_connection(dbPath)
-    startDate, endDate, bikeBool, truckBool, pedBool, motorBool = build_sidebar()
-    build_dashboard(conn, start_date=startDate, end_date=endDate, inolvedPartyBike=bikeBool,
-                    involvedPartyTruck=truckBool, involvedPartyPedestrian=pedBool, involvedPartyMotorcycle=motorBool)
-    fatality_rate(conn)
+    startDate, endDate, county, bikeBool, truckBool, pedBool, motorBool = build_sidebar()
+    
+    countFatalities, countInjured = st.columns(2)
+    
+    fatalitiesPer1000, injuriesPer1000, mapDF = build_dashboard(conn, 
+        start_date=startDate, end_date=endDate, 
+        specificCountyFilter=county, inolvedPartyBike=bikeBool,
+        involvedPartyTruck=truckBool, involvedPartyPedestrian=pedBool, 
+        involvedPartyMotorcycle=motorBool)
+    
+    with countFatalities:
+        st.subheader(fatalitiesPer1000)
+        st.markdown("**Fatalities per 1,000 population**")
+
+    with countInjured:
+        st.subheader(injuriesPer1000)
+        st.markdown("**Injuries per 1,000 population**")
+    
+    
+    st.map(mapDF)
 
 @st.cache(hash_funcs={Connection: id})
 def get_connection(path: str):
@@ -26,10 +103,10 @@ def get_connection(path: str):
     return sqlite3.connect(path, check_same_thread=False)
 
 
-@st.cache(hash_funcs={Connection: id}, suppress_st_warning=True)
+@st.cache(hash_funcs={Connection: id}, suppress_st_warning=True, allow_output_mutation=True)
 def get_data(conn: Connection):
     query = '''
-    SELECT case_id, latitude, longitude, collision_date, 
+    SELECT case_id, latitude, longitude, collision_date, SUBSTR(county_city_location, -4, 2) AS county_code,
        collision_time, weather_1, weather_2, collision_severity,
        severe_injury_count, other_visible_injury_count, 
        complaint_of_pain_injury_count, pedestrian_killed_count,
@@ -44,62 +121,98 @@ def get_data(conn: Connection):
     FROM collisions
     WHERE collision_date IS NOT NULL
     AND collision_time IS NOT NULL
-    AND date(collision_date) BETWEEN date('2021-01-01') and date('2021-12-31')
+    AND date(collision_date) BETWEEN date('2020-06-01') and date('2021-12-31')
     '''
     df = pd.read_sql_query(query, conn,
                         parse_dates=['collision_date'])
     return df
 
+#@st.cache(hash_funcs={Connection: id})
 def build_sidebar():
-    with st.sidebar.expander("Filter data"):
-        startDateCol, endDateCol = st.columns(2)
+    
+    st.sidebar.write("**Filter data**")
+    ###############
+    # Date Filter #
+    ###############
 
-        sd = startDateCol.date_input(label="Start Date",
-                                            min_value=datetime(2021, 1, 1),
-                                            max_value=datetime(2021, 6, 4),
-                                            value=datetime(2021, 1, 1),
-                                            key="sd1")
-        ed = endDateCol.date_input(label="End Date",
-                                        min_value=datetime(2021, 1, 1),
+    startDateCol, endDateCol = st.sidebar.columns(2)
+
+    sd = startDateCol.date_input(label="Start Date",
+                                        min_value=datetime(2020, 6, 1),
                                         max_value=datetime(2021, 6, 4),
-                                        value=datetime(2021, 6, 4),
-                                        key="ed1")
+                                        value=datetime(2021, 1, 1),
+                                        key="sd1")
+    ed = endDateCol.date_input(label="End Date",
+                                    min_value=datetime(2020, 6, 1),
+                                    max_value=datetime(2021, 6, 4),
+                                    value=datetime(2021, 6, 4),
+                                    key="ed1")
 
-        st.write("**Involved Parties**")
-        inolvedPartyBike = st.checkbox(label="Bicycle", value=False)
-        involvedPartyTruck = st.checkbox(label="Truck", value=False)
-        involvedPartyPedestrian = st.checkbox(label="Pedestrian", value=False)
-        involvedPartyMotorcycle = st.checkbox(label="Motorcycle", value=False)
-        st.write("**Page Navigation**")
+    #################
+    # County Filter #
+    #################
+    countyKey = 0
+    with st.sidebar.expander(label="Click here to choose county:"):
+        allCounties = ['All Counties']
+        countiesList = [county for county in countyCodes.values()]
+        allCounties.extend(countiesList)
+        specificCountyFilter = st.radio(label="Choose county:",
+                                        options=allCounties,
+                                        index=0,
+                                        key=countyKey)
+    countyKey += 1
+    if specificCountyFilter:
+        st.sidebar.write("You selected: ", specificCountyFilter)
+    
+    
 
-        my_page = st.radio('Page Navigation', ['Daily Monitoring',
-                                               'Weekly Monitoring',
-                                               'Monthly Monitoring'])
-    return sd, ed, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle
+    ###########################
+    # Involved Parties Filter #
+    ###########################
+
+    st.sidebar.write("**Involved Parties**")
+    inolvedPartyBike = st.sidebar.checkbox(
+        label="Bicycle", value=False, help="Applies to map only")
+    involvedPartyTruck = st.sidebar.checkbox(
+        label="Truck", value=False, help="Applies to map only")
+    involvedPartyPedestrian = st.sidebar.checkbox(
+        label="Pedestrian", value=False, help="Applies to map only")
+    involvedPartyMotorcycle = st.sidebar.checkbox(
+        label="Motorcycle", value=False, help="Applies to map only")
+    return sd, ed, specificCountyFilter, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle
 
 
-@st.cache(hash_funcs={Connection: id})
-def fatality_rate(conn: Connection):
-    # Based on:
-    # https: // www.kaggle.com/alexgude/switrs-increase-in-traffic-fatalities-after-covid
-    fatalityQuery = f"""
-        SELECT collision_date
-            , 1 as crashes
-            , IIF(COLLISION_SEVERITY='fatal', 1, 0) as fatalitiesCount
-        FROM collisions 
-        WHERE collision_date IS NOT NULL 
-        AND date(collision_date) BETWEEN date('2019-01-01') AND date('2021-12-31')
-        """
-    fatalityRateDF = pd.read_sql_query(fatalityQuery, conn, parse_dates=[
-        "collision_date"]).groupby('collision_date').agg('sum')
 
-    return fatalityRateDF
+# def fatality_rate(conn: Connection):
+#     # Based on:
+#     # https: // www.kaggle.com/alexgude/switrs-increase-in-traffic-fatalities-after-covid
+#     fatalityQuery = f"""
+#         SELECT collision_date
+#             , 1 as crashes
+#             , IIF(COLLISION_SEVERITY='fatal', 1, 0) as fatalitiesCount
+#         FROM collisions 
+#         WHERE collision_date IS NOT NULL 
+#         AND date(collision_date) BETWEEN date('2019-01-01') AND date('2021-12-31')
+#         """
+#     fatalityRateDF = pd.read_sql_query(fatalityQuery, conn, parse_dates=[
+#         "collision_date"]).groupby('collision_date').agg('sum')
 
+#     return fatalityRateDF
 
-def build_dashboard(conn: Connection, start_date, end_date, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle):
-    fatalityRate, countInjured = st.columns(2)
+@st.cache(hash_funcs={Connection: id}, allow_output_mutation=True, suppress_st_warning=True)
+def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle):
+    
+    
+    populationData = pd.read_csv(
+        'california_population_data.csv', index_col=[0])
+
+    def retrieveCountyName(dict, search_age):
+        for code, county in dict.items():
+            if county == search_age:
+                return code
 
     df = get_data(conn)
+
     dateMask = (df['collision_date'].dt.date >= start_date) & (
         df['collision_date'].dt.date <= end_date)
 
@@ -108,46 +221,52 @@ def build_dashboard(conn: Connection, start_date, end_date, inolvedPartyBike, in
         (df['bicycle_collision'] == inolvedPartyBike) | \
         (df['motorcycle_collision'] == involvedPartyMotorcycle)
 
-    involvedDF = df.loc[dateMask].loc[partyMask]
+    if specificCountyFilter =='All Counties':
+        countyMask = (pd.IndexSlice[slice(None)])
+    else:
+        countyMask = (df['county_code'] == retrieveCountyName(
+            countyCodes, specificCountyFilter))
+
+    maskedDF = df.loc[dateMask].loc[countyMask]
+    
 
 
-    ##################
-    # Average Weekly #
-    # Fatality Rate  #
-    ##################
+    ###################
+    # Fatalities per  #
+    # 1000 population #
+    ###################
 
-    fatalityDF = fatality_rate(conn)
-    fatalityDateMask = (fatalityDF.index.date >= start_date) & (
-        fatalityDF.index.date <= end_date)
-    with fatalityRate:
+    fatalitiesPer1000 = (maskedDF['killed_victims'].sum())/1000
 
+    ###################
+    # Injuries per    #
+    # 1000 population #
+    ###################
 
-        weeklyFatalityRateDF = fatalityDF.loc[fatalityDateMask].resample(
-            'W-MON').sum()
-        weeklyFatalityRateDF['fatalitiesRate'] = weeklyFatalityRateDF['fatalitiesCount'] / \
-            weeklyFatalityRateDF['crashes']
-        meanWeeklyFatalityRate = np.mean(
-            weeklyFatalityRateDF['fatalitiesRate'])*100
-        strMWFRate = "{:.2f}%".format(meanWeeklyFatalityRate)
-        st.subheader(strMWFRate)
-        st.markdown("**Average Weekly Fatality Rate**")
+    injuriesPer1000 = (maskedDF['injured_victims'].sum())/1000
+    
+    
+    #######
+    # Map #
+    #######
 
+    mapDF = maskedDF[['latitude', 'longitude']].dropna().drop_duplicates()
 
+    
 
-    with countInjured:
-        number = 111
-        st.subheader(number)
-        st.markdown("**Injured Victims**")
+    return fatalitiesPer1000, injuriesPer1000, mapDF
 
-
-
-
-
-
-    mapDF = involvedDF[['collision_date', 'latitude', 'longitude']].dropna()
-    st.map(mapDF[['latitude', 'longitude']].drop_duplicates())
-
-
+    # fatalityDF = fatality_rate(conn)
+    # fatalityDateMask = (fatalityDF.index.date >= start_date) & (
+    #     fatalityDF.index.date <= end_date)
+        # weeklyFatalityRateDF = fatalityDF.loc[fatalityDateMask].resample(
+        #     'W-MON').sum()
+        # weeklyFatalityRateDF['fatalitiesRate'] = weeklyFatalityRateDF['fatalitiesCount'] / \
+        #     weeklyFatalityRateDF['crashes']
+        # meanWeeklyFatalityRate = np.mean(
+        #     weeklyFatalityRateDF['fatalitiesRate'])*100
+        # strMWFRate = "{:.2f}%".format(meanWeeklyFatalityRate)
+        # st.subheader(strMWFRate)
 
 
 if __name__ == "__main__":
