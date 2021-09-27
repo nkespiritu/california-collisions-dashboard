@@ -1,12 +1,13 @@
 import time
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import streamlit as st
 from datetime import datetime
 import sqlite3
 from sqlite3 import Connection
 from pathlib import Path
+from bokeh.plotting import figure
+
 
 dbPath = '../../../iCloud/Employment/Plentina/switrs.sqlite'
 
@@ -74,15 +75,15 @@ countyCodes = {
 def main():
     st.title("California Collisions Monitor")
     conn = get_connection(dbPath)
-    startDate, endDate, county, bikeBool, truckBool, pedBool, motorBool = build_sidebar()
+    startDate, endDate, county, alcoholBool = build_sidebar()
     
     countFatalities, countInjured = st.columns(2)
+    countPedestrianF, countPedestrianI = st.columns(2)
+    countCyclistF, countCyclistI = st.columns(2)
     
-    fatalitiesPer1000, injuriesPer1000, mapDF = build_dashboard(conn, 
+    fatalitiesPer1000, injuriesPer1000, pedF, pedI, cyF, cyI, mapDF, hourlyFig, topFactorsDF = build_dashboard(conn,
         start_date=startDate, end_date=endDate, 
-        specificCountyFilter=county, inolvedPartyBike=bikeBool,
-        involvedPartyTruck=truckBool, involvedPartyPedestrian=pedBool, 
-        involvedPartyMotorcycle=motorBool)
+        specificCountyFilter=county, alcoholFilter=alcoholBool)
     
     with countFatalities:
         st.subheader(fatalitiesPer1000)
@@ -90,10 +91,36 @@ def main():
 
     with countInjured:
         st.subheader(injuriesPer1000)
-        st.markdown("**Injuries per 1,000 population**")
+        st.markdown("**Injured per 1,000 population**")
     
+    with countPedestrianF:
+        st.subheader(pedF)
+        st.markdown("*Pedestrian fatalities*")
+
+    with countPedestrianI:
+        st.subheader(pedI)
+        st.markdown("*Injured pedestrian*")
     
+    with countCyclistF:
+        st.subheader(cyF)
+        st.markdown("*Bicyclist fatalities*")
+
+    with countCyclistI:
+        st.subheader(cyI)
+        st.markdown("*Injured bicyclists*")
+
+    st.markdown("### Locations of filtered collisions")
     st.map(mapDF)
+    
+    graphInjuries, graphFactors = st.columns(2)
+    
+    with graphInjuries:
+        st.markdown("### Victims per hour")
+        st.bokeh_chart(hourlyFig, use_container_width=True)
+    
+    with graphFactors:
+        st.markdown("### Top 10 factors of collision")
+        st.table(topFactorsDF)
 
 @st.cache(hash_funcs={Connection: id})
 def get_connection(path: str):
@@ -121,7 +148,8 @@ def get_data(conn: Connection):
     FROM collisions
     WHERE collision_date IS NOT NULL
     AND collision_time IS NOT NULL
-    AND date(collision_date) BETWEEN date('2020-06-01') and date('2021-12-31')
+    AND chp_beat_type IS NOT 'interstate'
+    AND date(collision_date) BETWEEN date('2019-06-04') and date('2021-12-31')
     '''
     df = pd.read_sql_query(query, conn,
                         parse_dates=['collision_date'])
@@ -138,12 +166,12 @@ def build_sidebar():
     startDateCol, endDateCol = st.sidebar.columns(2)
 
     sd = startDateCol.date_input(label="Start Date",
-                                        min_value=datetime(2020, 6, 1),
+                                        min_value=datetime(2019, 6, 4),
                                         max_value=datetime(2021, 6, 4),
                                         value=datetime(2021, 1, 1),
                                         key="sd1")
     ed = endDateCol.date_input(label="End Date",
-                                    min_value=datetime(2020, 6, 1),
+                                    min_value=datetime(2019, 6, 4),
                                     max_value=datetime(2021, 6, 4),
                                     value=datetime(2021, 6, 4),
                                     key="ed1")
@@ -151,6 +179,7 @@ def build_sidebar():
     #################
     # County Filter #
     #################
+
     countyKey = 0
     with st.sidebar.expander(label="Click here to choose county:"):
         allCounties = ['All Counties']
@@ -170,16 +199,19 @@ def build_sidebar():
     # Involved Parties Filter #
     ###########################
 
-    st.sidebar.write("**Involved Parties**")
-    inolvedPartyBike = st.sidebar.checkbox(
-        label="Bicycle", value=False, help="Applies to map only")
-    involvedPartyTruck = st.sidebar.checkbox(
-        label="Truck", value=False, help="Applies to map only")
-    involvedPartyPedestrian = st.sidebar.checkbox(
-        label="Pedestrian", value=False, help="Applies to map only")
-    involvedPartyMotorcycle = st.sidebar.checkbox(
-        label="Motorcycle", value=False, help="Applies to map only")
-    return sd, ed, specificCountyFilter, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle
+    # st.sidebar.write("**Involved Parties**")
+    # inolvedPartyBike = st.sidebar.checkbox(
+    #     label="Bicycle", value=False, help="Applies to map only")
+    # involvedPartyTruck = st.sidebar.checkbox(
+    #     label="Truck", value=False, help="Applies to map only")
+    # involvedPartyPedestrian = st.sidebar.checkbox(
+    #     label="Pedestrian", value=False, help="Applies to map only")
+    # involvedPartyMotorcycle = st.sidebar.checkbox(
+    #     label="Motorcycle", value=False, help="Applies to map only")
+
+    alcoholFilter = st.sidebar.checkbox(label="Is alcohol involved?", value=False)
+
+    return sd, ed, specificCountyFilter, alcoholFilter
 
 
 
@@ -200,12 +232,13 @@ def build_sidebar():
 #     return fatalityRateDF
 
 @st.cache(hash_funcs={Connection: id}, allow_output_mutation=True, suppress_st_warning=True)
-def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter, inolvedPartyBike, involvedPartyTruck, involvedPartyPedestrian, involvedPartyMotorcycle):
+def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter, alcoholFilter):
     
-    
+    # read the population dataset containing county names
     populationData = pd.read_csv(
         'california_population_data.csv', index_col=[0])
 
+    # function to retrieve county names
     def retrieveCountyName(dict, search_age):
         for code, county in dict.items():
             if county == search_age:
@@ -213,13 +246,12 @@ def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter
 
     df = get_data(conn)
 
+    ###########
+    # Filters #
+    ###########
+
     dateMask = (df['collision_date'].dt.date >= start_date) & (
         df['collision_date'].dt.date <= end_date)
-
-    partyMask = (df['pedestrian_collision'] == involvedPartyPedestrian) | \
-        (df['truck_collision'] == involvedPartyTruck) | \
-        (df['bicycle_collision'] == inolvedPartyBike) | \
-        (df['motorcycle_collision'] == involvedPartyMotorcycle)
 
     if specificCountyFilter =='All Counties':
         countyMask = (pd.IndexSlice[slice(None)])
@@ -227,10 +259,17 @@ def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter
         countyMask = (df['county_code'] == retrieveCountyName(
             countyCodes, specificCountyFilter))
 
-    maskedDF = df.loc[dateMask].loc[countyMask]
-    
+    if alcoholFilter == True:
+        alcoholMask = (df['alcohol_involved'] == 1)
+    else:
+        alcoholMask = (pd.IndexSlice[slice(None)])
 
+    maskedDF = df.loc[dateMask].loc[countyMask].loc[alcoholMask]
 
+    # partyMask = (maskedDF['pedestrian_collision'] == involvedPartyPedestrian) | \
+    #     (maskedDF['truck_collision'] == involvedPartyTruck) | \
+    #     (maskedDF['bicycle_collision'] == inolvedPartyBike) | \
+    #     (maskedDF['motorcycle_collision'] == involvedPartyMotorcycle)
     ###################
     # Fatalities per  #
     # 1000 population #
@@ -245,16 +284,71 @@ def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter
 
     injuriesPer1000 = (maskedDF['injured_victims'].sum())/1000
     
+    #########################
+    # Number of             #
+    # pedestrian fatalities #
+    #########################
     
+    pedF = maskedDF['pedestrian_killed_count'].sum()
+    
+    #######################
+    # Number of           #
+    # injured pedestrians #
+    #######################
+    
+    pedI = maskedDF['pedestrian_injured_count'].sum()
+
+    ########################
+    # Number of            #
+    # bicyclist fatalities #
+    ########################
+
+    cyF = maskedDF['bicyclist_killed_count'].sum()
+
+    ######################
+    # Number of          #
+    # injured bicyclists #
+    ######################
+
+    cyI = maskedDF['bicyclist_injured_count'].sum()
+
     #######
     # Map #
     #######
 
     mapDF = maskedDF[['latitude', 'longitude']].dropna().drop_duplicates()
 
+    ################
+    # Hourly graph #    
+    ################
     
+    maskedDF['collision_hour'] = pd.to_datetime(
+        maskedDF['collision_time'], format='%H:%M:%S').dt.hour
+    hourlyInjuredDF = pd.DataFrame(maskedDF.groupby('collision_hour').sum(
+    )['severe_injury_count']).rename(columns={'severe_injury_count': "Number of severely injured"})
+    hourlyFatalitiesDF = pd.DataFrame(maskedDF.groupby('collision_hour').sum(
+    )['killed_victims']).rename(columns={'killed_victims': "Number of fatalities"})
+    
+    hourlyFig = figure(
+        title="",
+        x_axis_label='Hour',
+        y_axis_label='Count')
 
-    return fatalitiesPer1000, injuriesPer1000, mapDF
+    hourlyFig.xgrid.grid_line_color = None
+
+    hourlyFig.line(hourlyInjuredDF.index,
+                   hourlyInjuredDF['Number of severely injured'], legend_label='Severely injured', line_width=2, line_color="gray")
+    hourlyFig.line(hourlyFatalitiesDF.index,
+                   hourlyFatalitiesDF['Number of fatalities'], legend_label='Fatalities', line_width=2, line_color="red")
+
+    ########################
+    # Table of top factors #
+    ########################
+
+    topFactorsDF = (pd.DataFrame(maskedDF['pcf_violation_category'].value_counts(
+        normalize=True)*100)).rename(columns={'pcf_violation_category': '% of all collisions'}).head(10)
+
+    return fatalitiesPer1000, injuriesPer1000, pedF, pedI, cyF, cyI, mapDF, hourlyFig, topFactorsDF
 
     # fatalityDF = fatality_rate(conn)
     # fatalityDateMask = (fatalityDF.index.date >= start_date) & (
@@ -267,7 +361,6 @@ def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter
         #     weeklyFatalityRateDF['fatalitiesRate'])*100
         # strMWFRate = "{:.2f}%".format(meanWeeklyFatalityRate)
         # st.subheader(strMWFRate)
-
 
 if __name__ == "__main__":
     main()
