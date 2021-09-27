@@ -73,7 +73,7 @@ countyCodes = {
 }
 
 def main():
-    st.title("California Collisions Monitor")
+    st.title("California Vehicular Incidents Monitor")
     conn = get_connection(dbPath)
     startDate, endDate, county, alcoholBool = build_sidebar()
     
@@ -133,31 +133,35 @@ def get_connection(path: str):
 @st.cache(hash_funcs={Connection: id}, suppress_st_warning=True, allow_output_mutation=True)
 def get_data(conn: Connection):
     query = '''
-    SELECT case_id, latitude, longitude, collision_date, SUBSTR(county_city_location, -4, 2) AS county_code,
-       collision_time, weather_1, weather_2, collision_severity,
-       severe_injury_count, other_visible_injury_count, 
-       complaint_of_pain_injury_count, pedestrian_killed_count,
+    SELECT case_id, latitude, longitude, collision_date, 
+       SUBSTR(county_city_location, -4, 2) AS county_code,
+       collision_time, severe_injury_count, pedestrian_killed_count,
        pedestrian_injured_count, bicyclist_killed_count,
-       bicyclist_injured_count, motorcyclist_killed_count,
-       motorcyclist_injured_count, killed_victims, injured_victims,
-       party_count, primary_collision_factor, pcf_violation_code,
-       pcf_violation_category, pcf_violation, pcf_violation_subsection,
-       lighting, road_surface, road_condition_1, road_condition_2, 
-       pedestrian_collision, bicycle_collision, motorcycle_collision, truck_collision,
-       alcohol_involved, hit_and_run
+       bicyclist_injured_count, killed_victims, injured_victims,
+       pcf_violation_category, alcohol_involved
     FROM collisions
     WHERE collision_date IS NOT NULL
     AND collision_time IS NOT NULL
     AND chp_beat_type IS NOT 'interstate'
     AND date(collision_date) BETWEEN date('2019-06-04') and date('2021-12-31')
     '''
+
+# include other columns in next iteration:
+# pedestrian_collision, bicycle_collision, motorcycle_collision, 
+# truck_collision, lighting, road_surface, road_condition_1, 
+# road_condition_2, hit_and_run, pcf_violation, pcf_violation_subsection,
+# pcf_violation_code, primary_collision_factor, party_count,
+# motorcyclist_killed_count, motorcyclist_injured_count,
+# weather_1, weather_2, collision_severity, other_visible_injury_count,
+# complaint_of_pain_injury_count
+
     df = pd.read_sql_query(query, conn,
                         parse_dates=['collision_date'])
     return df
 
 #@st.cache(hash_funcs={Connection: id})
 def build_sidebar():
-    
+    st.sidebar.image('logo.png', use_column_width=True)
     st.sidebar.write("**Filter data**")
     ###############
     # Date Filter #
@@ -168,7 +172,7 @@ def build_sidebar():
     sd = startDateCol.date_input(label="Start Date",
                                         min_value=datetime(2019, 6, 4),
                                         max_value=datetime(2021, 6, 4),
-                                        value=datetime(2021, 1, 1),
+                                        value=datetime(2019, 6, 4),
                                         key="sd1")
     ed = endDateCol.date_input(label="End Date",
                                     min_value=datetime(2019, 6, 4),
@@ -315,7 +319,7 @@ def build_dashboard(conn: Connection, start_date, end_date, specificCountyFilter
     #######
     # Map #
     #######
-
+    
     mapDF = maskedDF[['latitude', 'longitude']].dropna().drop_duplicates()
 
     ################
